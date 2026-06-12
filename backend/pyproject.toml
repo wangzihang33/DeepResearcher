@@ -36,7 +36,7 @@ where = ["src"]
 "" = "src"
 
 [tool.setuptools.package-data]
-"*" = ["py.typed"]
+"*" = ["py.typed", "data/*.jsonl"]
 
 [tool.ruff]
 lint.select = [

@@ -89,6 +89,11 @@ class Configuration(BaseModel):
         title="LLM Model ID",
         description="Optional model identifier for custom OpenAI-compatible services",
     )
+    llm_timeout: int = Field(
+        default=180,
+        title="LLM Timeout",
+        description="Timeout in seconds for LLM API calls",
+    )
 
     @classmethod
     def from_env(cls, overrides: Optional[dict[str, Any]] = None) -> "Configuration":
@@ -106,9 +111,10 @@ class Configuration(BaseModel):
         env_aliases = {
             "local_llm": os.getenv("LOCAL_LLM"),
             "llm_provider": os.getenv("LLM_PROVIDER"),
-            "llm_api_key": os.getenv("LLM_API_KEY"),
-            "llm_model_id": os.getenv("LLM_MODEL_ID"),
-            "llm_base_url": os.getenv("LLM_BASE_URL"),
+            "llm_api_key": os.getenv("DASHSCOPE_API_KEY") or os.getenv("LLM_API_KEY"),
+            "llm_model_id": os.getenv("DASHSCOPE_MODEL") or os.getenv("LLM_MODEL_ID"),
+            "llm_base_url": os.getenv("DASHSCOPE_BASE_URL") or os.getenv("LLM_BASE_URL"),
+            "llm_timeout": os.getenv("LLM_TIMEOUT"),
             "lmstudio_base_url": os.getenv("LMSTUDIO_BASE_URL"),
             "ollama_base_url": os.getenv("OLLAMA_BASE_URL"),
             "max_web_research_loops": os.getenv("MAX_WEB_RESEARCH_LOOPS"),
@@ -143,4 +149,3 @@ class Configuration(BaseModel):
         """Best-effort resolution of the model identifier to use."""
 
         return self.llm_model_id or self.local_llm
-
