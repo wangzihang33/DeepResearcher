@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock, Thread
@@ -22,6 +24,7 @@ from prompts import (
 from models import SummaryState, SummaryStateOutput, TodoItem
 from services.planner import PlanningService
 from services.reporter import ReportingService
+from services.research_graph import ResearchGraphWorkflow
 from services.search import dispatch_search, prepare_research_context
 from services.summarizer import SummarizationService
 from services.tool_events import ToolCallTracker
@@ -45,7 +48,8 @@ class DeepResearchAgent:
         self.tools_registry: ToolRegistry | None = None
         if self.note_tool:
             registry = ToolRegistry()
-            registry.register_tool(self.note_tool)
+            with redirect_stdout(StringIO()):
+                registry.register_tool(self.note_tool)
             self.tools_registry = registry
 
         self._tool_tracker = ToolCallTracker(
@@ -71,6 +75,17 @@ class DeepResearchAgent:
         self.planner = PlanningService(self.todo_agent, self.config)
         self.summarizer = SummarizationService(self._summarizer_factory, self.config)
         self.reporting = ReportingService(self.report_agent, self.config)
+        self.research_graph = ResearchGraphWorkflow(
+            planner=self.planner,
+            reporting=self.reporting,
+            execute_task=self._execute_task_sync,
+            drain_tool_events=lambda state, step=None: self._drain_tool_events(
+                state,
+                step=step,
+            ),
+            persist_report=self._persist_final_report,
+            serialize_task=self._serialize_task,
+        )
         self._last_search_notices: list[str] = []
 
     # ------------------------------------------------------------------
@@ -124,31 +139,15 @@ class DeepResearchAgent:
 
     def run(self, topic: str) -> SummaryStateOutput:
         """Execute the research workflow and return the final report."""
-        state = SummaryState(research_topic=topic)
-        state.todo_items = self.planner.plan_todo_list(state)
-        self._drain_tool_events(state)
-
-        if not state.todo_items:
-            logger.info("No TODO items generated; falling back to single task")
-            state.todo_items = [self.planner.create_fallback_task(state)]
-
-        for task in state.todo_items:
-            self._execute_task(state, task, emit_stream=False)
-
-        report = self.reporting.generate_report(state)
-        self._drain_tool_events(state)
-        state.structured_report = report
-        state.running_summary = report
-        self._persist_final_report(state, report)
-
-        return SummaryStateOutput(
-            running_summary=report,
-            report_markdown=report,
-            todo_items=state.todo_items,
-        )
+        return self.research_graph.run(topic)
 
     def run_stream(self, topic: str) -> Iterator[dict[str, Any]]:
         """Execute the workflow yielding incremental progress events."""
+        yield from self.research_graph.stream(topic)
+        return
+
+    def _legacy_run_stream(self, topic: str) -> Iterator[dict[str, Any]]:
+        """Legacy threaded workflow kept as a fallback reference."""
         state = SummaryState(research_topic=topic)
         logger.debug("Starting streaming research: topic=%s", topic)
         yield {"type": "status", "message": "初始化研究流程"}
@@ -286,6 +285,12 @@ class DeepResearchAgent:
     # ------------------------------------------------------------------
     # Execution helpers
     # ------------------------------------------------------------------
+    def _execute_task_sync(self, state: SummaryState, task: TodoItem) -> None:
+        """Run the generator-based task executor to completion."""
+
+        for _ in self._execute_task(state, task, emit_stream=False):
+            pass
+
     def _execute_task(
         self,
         state: SummaryState,

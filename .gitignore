@@ -12,6 +12,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.uv-cache/
 .coverage
 htmlcov/
 
@@ -31,4 +32,3 @@ cache/
 .idea/
 .DS_Store
 Thumbs.db
-
