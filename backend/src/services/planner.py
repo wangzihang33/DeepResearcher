@@ -36,12 +36,30 @@ class PlanningService:
             research_topic=state.research_topic,
         )
 
-        response = self._agent.run(prompt)
-        self._agent.clear_history()
+        try:
+            response = self._agent.run(prompt)
+            logger.info("Planner raw output (truncated): %s", response[:500])
+            tasks_payload = self._extract_tasks(response)
 
-        logger.info("Planner raw output (truncated): %s", response[:500])
+            if len(tasks_payload) < 3:
+                logger.warning(
+                    "Planner output yielded %d task(s); requesting JSON repair",
+                    len(tasks_payload),
+                )
+                repaired_response = self._agent.run(
+                    self._build_repair_prompt(response, state.research_topic)
+                )
+                logger.info(
+                    "Planner repaired output (truncated): %s",
+                    repaired_response[:500],
+                )
+                repaired_tasks = self._extract_tasks(repaired_response)
+                if len(repaired_tasks) > len(tasks_payload):
+                    tasks_payload = repaired_tasks
+        finally:
+            self._agent.clear_history()
 
-        tasks_payload = self._extract_tasks(response)   # 下面实现了这个函数，提取出任务信息
+        tasks_payload = self._normalize_tasks(tasks_payload)[:5]
         todo_items: List[TodoItem] = []
 
         for idx, item in enumerate(tasks_payload, start=1):
@@ -80,7 +98,7 @@ class PlanningService:
     # ------------------------------------------------------------------
     # Parsing helpers
     # ------------------------------------------------------------------
-    def _extract_tasks(self, raw_response: str) -> List[dict[str, Any]]:    # 这里就是这个项目最大的优点和难点
+    def _extract_tasks(self, raw_response: str) -> List[dict[str, Any]]:
         """Parse planner output into a list of task dictionaries."""
 
         text = raw_response.strip()
@@ -108,7 +126,98 @@ class PlanningService:
                     if isinstance(item, dict):
                         tasks.append(item)
 
+        if not tasks:
+            tasks = self._extract_markdown_table(text)
+
         return tasks
+
+    @staticmethod
+    def _normalize_tasks(tasks: List[dict[str, Any]]) -> List[dict[str, str]]:
+        """Clean task fields, remove duplicates, and discard unusable rows."""
+
+        normalized: List[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        for item in tasks:
+            title = PlanningService._clean_markdown(str(item.get("title") or ""))
+            intent = PlanningService._clean_markdown(str(item.get("intent") or ""))
+            query = PlanningService._clean_markdown(str(item.get("query") or ""))
+            if not title or not query:
+                continue
+
+            key = (title.casefold(), query.casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(
+                {
+                    "title": title,
+                    "intent": intent or "聚焦主题的关键问题",
+                    "query": query,
+                }
+            )
+
+        return normalized
+
+    @staticmethod
+    def _build_repair_prompt(raw_response: str, research_topic: str) -> str:
+        """Ask the planner to convert a malformed plan into the required schema."""
+
+        return f"""
+你刚才已经完成任务规划，但最终输出未满足结构化协议。请将全部规划结果重新整理为 3~5 个互补任务。
+
+研究主题：{research_topic}
+
+原始规划：
+{raw_response}
+
+只输出合法 JSON，不要调用工具，不要输出解释、Markdown 或代码围栏：
+{{
+  "tasks": [
+    {{
+      "title": "任务名称",
+      "intent": "任务要解决的核心问题",
+      "query": "可直接执行的网络检索关键词"
+    }}
+  ]
+}}
+""".strip()
+
+    @staticmethod
+    def _extract_markdown_table(text: str) -> List[dict[str, Any]]:
+        """Recover task rows when the model returns a Markdown table."""
+
+        tasks: List[dict[str, Any]] = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("|") or line.count("|") < 4:
+                continue
+
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if len(cells) < 4:
+                continue
+
+            first_cell = PlanningService._clean_markdown(cells[0])
+            if not re.fullmatch(r"\d+[.、]?", first_cell):
+                continue
+
+            title = PlanningService._clean_markdown(cells[1])
+            intent = PlanningService._clean_markdown(cells[2])
+            query = PlanningService._clean_markdown(" | ".join(cells[3:]))
+            if title and query:
+                tasks.append({"title": title, "intent": intent, "query": query})
+
+        return tasks
+
+    @staticmethod
+    def _clean_markdown(value: str) -> str:
+        """Remove common Markdown decoration from a task field."""
+
+        value = value.strip()
+        value = re.sub(r"^`+|`+$", "", value)
+        value = re.sub(r"^(?:\*\*|__)(.*?)(?:\*\*|__)$", r"\1", value)
+        value = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", value)
+        return re.sub(r"\s+", " ", value).strip()
 
     def _extract_json_payload(self, text: str) -> Optional[dict[str, Any] | list]:
         """Try to locate and parse a JSON object or array from the text."""

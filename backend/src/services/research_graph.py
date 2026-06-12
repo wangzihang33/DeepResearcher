@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import operator
 import re
 from collections.abc import Callable, Iterator
@@ -12,6 +13,7 @@ from langgraph.types import Send
 from typing_extensions import Annotated, TypedDict
 
 from models import (
+    EvidenceGraph,
     HandoffMessage,
     ResearchArtifact,
     SourceCard,
@@ -20,8 +22,12 @@ from models import (
     TaskBoardItem,
     TodoItem,
 )
+from services.evidence import EvidenceGraphBuilder
 from services.planner import PlanningService
 from services.reporter import ReportingService
+
+
+logger = logging.getLogger(__name__)
 
 
 class ResearchGraphState(TypedDict, total=False):
@@ -34,6 +40,7 @@ class ResearchGraphState(TypedDict, total=False):
     artifacts: Annotated[list[ResearchArtifact], operator.add]
     handoff_messages: Annotated[list[HandoffMessage], operator.add]
     events: Annotated[list[dict[str, Any]], operator.add]
+    evidence_graph: EvidenceGraph
     report_markdown: str
     report_note_id: Optional[str]
     report_note_path: Optional[str]
@@ -75,6 +82,7 @@ class ResearchGraphWorkflow:
         self._drain_tool_events = drain_tool_events
         self._persist_report = persist_report
         self._serialize_task = serialize_task
+        self._evidence_builder = EvidenceGraphBuilder()
         self._graph = self._build_graph()
 
     def run(self, topic: str) -> SummaryStateOutput:
@@ -112,12 +120,14 @@ class ResearchGraphWorkflow:
         graph.add_node("planner", self._planner_node)
         graph.add_node("researcher", self._researcher_node)
         graph.add_node("compressor", self._compressor_node)
+        graph.add_node("citation_verifier", self._citation_verifier_node)
         graph.add_node("report_writer", self._report_writer_node)
 
         graph.add_edge(START, "planner")
         graph.add_conditional_edges("planner", self._assign_researchers, ["researcher"])
         graph.add_edge("researcher", "compressor")
-        graph.add_edge("compressor", "report_writer")
+        graph.add_edge("compressor", "citation_verifier")
+        graph.add_edge("citation_verifier", "report_writer")
         graph.add_edge("report_writer", END)
         return graph.compile()
 
@@ -248,7 +258,13 @@ class ResearchGraphWorkflow:
             task.sources_summary = ""
             task.notices.append(error_message)
 
-        artifact = self._artifact_from_task(task, status, error_message)
+        research_context = "\n\n".join(local_state.web_research_results)
+        artifact = self._artifact_from_task(
+            task,
+            status,
+            error_message,
+            research_context=research_context,
+        )
 
         if task.sources_summary:
             events.append(
@@ -357,9 +373,9 @@ class ResearchGraphWorkflow:
             "task_board": board,
             "handoff_messages": [
                 HandoffMessage(
-                    message_id="handoff-compressor-writer",
+                    message_id="handoff-compressor-verifier",
                     from_agent="Compressor",
-                    to_agent="ReportWriter",
+                    to_agent="CitationVerifier",
                     message_type="compressed_context",
                     content="提交已合并的任务总结和来源证据",
                     payload={
@@ -369,6 +385,60 @@ class ResearchGraphWorkflow:
                 )
             ],
             "events": [{"type": "status", "message": message}],
+        }
+
+    def _citation_verifier_node(self, state: ResearchGraphState) -> ResearchGraphState:
+        artifacts = state.get("artifacts", [])
+        evidence_graph = self._evidence_builder.build(artifacts)
+        verified_summary = self._evidence_builder.format_verified_claims(evidence_graph)
+        audit_markdown = self._evidence_builder.format_audit_markdown(evidence_graph)
+
+        summary_state = state.get("summary_state") or SummaryState(
+            research_topic=state.get("research_topic") or ""
+        )
+        summary_state.verified_claims_summary = verified_summary
+        summary_state.citation_audit_markdown = audit_markdown
+        summary_state.citation_metrics = dict(evidence_graph.metrics)
+
+        metrics = evidence_graph.metrics
+        message = (
+            "CitationVerifier 已完成引用校验："
+            f"claims={metrics.get('claim_count', 0)}, "
+            f"sources={metrics.get('source_count', 0)}, "
+            f"coverage={metrics.get('citation_coverage', 0):.2f}, "
+            f"unsupported_rate={metrics.get('unsupported_claim_rate', 0):.2f}"
+        )
+        logger.info(message)
+
+        return {
+            "summary_state": summary_state,
+            "evidence_graph": evidence_graph,
+            "handoff_messages": [
+                HandoffMessage(
+                    message_id="handoff-verifier-writer",
+                    from_agent="CitationVerifier",
+                    to_agent="ReportWriter",
+                    message_type="verified_evidence",
+                    content="提交已校验的结论和来源证据",
+                    payload=dict(evidence_graph.metrics),
+                )
+            ],
+            "events": [
+                {"type": "status", "message": message},
+                {
+                    "type": "citation_metrics",
+                    "metrics": dict(evidence_graph.metrics),
+                    "claims": [
+                        {
+                            "claim_id": claim.claim_id,
+                            "status": claim.support_status,
+                            "confidence": claim.confidence,
+                            "source_ids": list(claim.source_ids),
+                        }
+                        for claim in evidence_graph.claims
+                    ],
+                },
+            ],
         }
 
     def _report_writer_node(self, state: ResearchGraphState) -> ResearchGraphState:
@@ -413,8 +483,12 @@ class ResearchGraphWorkflow:
         task: TodoItem,
         status: str,
         error_message: str | None,
+        *,
+        research_context: str = "",
     ) -> ResearchArtifact:
-        evidence = self._parse_source_cards(task.sources_summary or "")
+        evidence = self._parse_source_cards(research_context)
+        if not evidence:
+            evidence = self._parse_source_cards(task.sources_summary or "")
         return ResearchArtifact(
             artifact_id=f"artifact-task-{task.id}",
             task_id=task.id,
@@ -433,9 +507,9 @@ class ResearchGraphWorkflow:
         )
 
     @staticmethod
-    def _parse_source_cards(sources_summary: str) -> list[SourceCard]:
+    def _parse_source_cards(source_text: str) -> list[SourceCard]:
         cards: list[SourceCard] = []
-        for raw_line in sources_summary.splitlines():
+        for raw_line in source_text.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
@@ -450,6 +524,12 @@ class ResearchGraphWorkflow:
                 title = line.split(":", 1)[1].strip() if ":" in line else line
                 cards.append(SourceCard(title=title))
                 continue
+            if line.startswith("信息内容:") and cards:
+                cards[-1].snippet = line.split(":", 1)[1].strip()
+                continue
+            if "信息内容限制" in line and cards:
+                cards[-1].raw = line.split(":", 1)[1].strip() if ":" in line else line
+                continue
             if cards and not cards[-1].snippet:
                 cards[-1].snippet = line
         return cards
@@ -458,7 +538,21 @@ class ResearchGraphWorkflow:
     def _extract_findings(summary: str, limit: int = 5) -> list[str]:
         findings: list[str] = []
         for raw_line in summary.splitlines():
-            line = raw_line.strip().lstrip("-*0123456789.、 ")
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if not re.match(r"^(?:[-*+]\s+|\d+[.、)]\s*)", stripped):
+                continue
+            line = re.sub(
+                r"^(?:[-*+]\s+|\d+[.、)]\s*)",
+                "",
+                stripped,
+            ).strip()
+            if any(
+                marker in line
+                for marker in ("参考来源", "来源概览", "任务总结", "暂无可用信息")
+            ):
+                continue
             if len(line) >= 12:
                 findings.append(line)
             if len(findings) >= limit:

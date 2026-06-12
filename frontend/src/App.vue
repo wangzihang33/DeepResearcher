@@ -23,6 +23,21 @@
           </div>
         </header>
 
+        <section v-if="citationMetrics" class="citation-strip">
+          <div>
+            <span>引用覆盖率</span>
+            <strong>{{ formatPercent(citationMetrics.citation_coverage) }}</strong>
+          </div>
+          <div>
+            <span>无支撑结论率</span>
+            <strong>{{ formatPercent(citationMetrics.unsupported_claim_rate) }}</strong>
+          </div>
+          <div>
+            <span>结论 / 来源</span>
+            <strong>{{ citationMetrics.claim_count }} / {{ citationMetrics.source_count }}</strong>
+          </div>
+        </section>
+
         <form class="form" @submit.prevent="handleSubmit">
           <label class="field">
             <span>研究主题</span>
@@ -268,7 +283,10 @@
               :class="{ 'block-highlight': summaryHighlight }"
             >
               <h3>任务总结</h3>
-              <pre class="block-pre">{{ currentTaskSummary || "暂无可用信息" }}</pre>
+              <div
+                class="markdown-body markdown-compact"
+                v-html="renderMarkdown(currentTaskSummary || '暂无可用信息')"
+              ></div>
             </section>
 
             <section
@@ -327,7 +345,7 @@
           :class="{ 'block-highlight': reportHighlight }"
         >
           <h3>最终报告</h3>
-          <pre class="block-pre">{{ reportMarkdown }}</pre>
+          <div class="markdown-body" v-html="renderMarkdown(reportMarkdown)"></div>
         </div>
       </section>
 
@@ -336,6 +354,8 @@
 </template>
 
 <script lang="ts" setup>
+import DOMPurify from "dompurify";
+import { marked } from "marked";
 import { computed, onBeforeUnmount, reactive, ref } from "vue";
 
 import {
@@ -376,6 +396,16 @@ interface TodoTaskView {
   toolCalls: ToolCallLog[];
 }
 
+interface CitationMetrics {
+  claim_count: number;
+  source_count: number;
+  supported_claim_count: number;
+  partial_claim_count: number;
+  unsupported_claim_count: number;
+  citation_coverage: number;
+  unsupported_claim_rate: number;
+}
+
 const form = reactive({
   topic: "",
   searchApi: ""
@@ -390,6 +420,7 @@ const isExpanded = ref(false);
 const todoTasks = ref<TodoTaskView[]>([]);
 const activeTaskId = ref<number | null>(null);
 const reportMarkdown = ref("");
+const citationMetrics = ref<CitationMetrics | null>(null);
 
 const summaryHighlight = ref(false);
 const sourcesHighlight = ref(false);
@@ -415,6 +446,19 @@ const TASK_STATUS_LABEL: Record<string, string> = {
 
 function formatTaskStatus(status: string): string {
   return TASK_STATUS_LABEL[status] ?? status;
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function renderMarkdown(value: string): string {
+  const rendered = marked.parse(value || "", {
+    async: false,
+    breaks: true,
+    gfm: true
+  });
+  return DOMPurify.sanitize(String(rendered));
 }
 
 const totalTasks = computed(() => todoTasks.value.length);
@@ -635,6 +679,7 @@ function resetWorkflowState() {
   todoTasks.value = [];
   activeTaskId.value = null;
   reportMarkdown.value = "";
+  citationMetrics.value = null;
   progressLogs.value = [];
   summaryHighlight.value = false;
   sourcesHighlight.value = false;
@@ -926,6 +971,23 @@ const handleSubmit = async () => {
           reportMarkdown.value = report || "报告生成失败，未获得有效内容";
           pulse(reportHighlight);
           progressLogs.value.push("最终报告已生成");
+          return;
+        }
+
+        if (event.type === "citation_metrics") {
+          const raw = event.metrics;
+          if (raw && typeof raw === "object") {
+            const metrics = raw as Record<string, unknown>;
+            citationMetrics.value = {
+              claim_count: Number(metrics.claim_count || 0),
+              source_count: Number(metrics.source_count || 0),
+              supported_claim_count: Number(metrics.supported_claim_count || 0),
+              partial_claim_count: Number(metrics.partial_claim_count || 0),
+              unsupported_claim_count: Number(metrics.unsupported_claim_count || 0),
+              citation_coverage: Number(metrics.citation_coverage || 0),
+              unsupported_claim_rate: Number(metrics.unsupported_claim_rate || 0)
+            };
+          }
           return;
         }
 
@@ -1355,6 +1417,37 @@ select:focus {
   font-size: 13px;
 }
 
+.citation-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.citation-strip > div {
+  min-width: 0;
+  padding: 12px 16px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.citation-strip > div + div {
+  border-left: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.citation-strip span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.citation-strip strong {
+  color: #0f172a;
+  font-size: 15px;
+}
+
 .timeline-wrapper {
   margin-top: 12px;
   max-height: 220px;
@@ -1684,6 +1777,125 @@ select:focus {
   color: #1f2937;
 }
 
+.markdown-body {
+  color: #1f2937;
+  font-size: 14px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.markdown-compact {
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 8px;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  margin: 1.4em 0 0.6em;
+  color: #0f172a;
+  line-height: 1.35;
+}
+
+.markdown-body :deep(h1) {
+  font-size: 24px;
+}
+
+.markdown-body :deep(h2) {
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+  font-size: 20px;
+}
+
+.markdown-body :deep(h3) {
+  font-size: 17px;
+}
+
+.markdown-body :deep(p),
+.markdown-body :deep(ul),
+.markdown-body :deep(ol),
+.markdown-body :deep(blockquote),
+.markdown-body :deep(table),
+.markdown-body :deep(pre) {
+  margin: 0.75em 0;
+}
+
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  padding-left: 24px;
+}
+
+.markdown-body :deep(li + li) {
+  margin-top: 4px;
+}
+
+.markdown-body :deep(a) {
+  color: #2563eb;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.markdown-body :deep(a:hover) {
+  text-decoration: underline;
+}
+
+.markdown-body :deep(blockquote) {
+  padding: 10px 14px;
+  border-left: 3px solid #60a5fa;
+  background: rgba(239, 246, 255, 0.82);
+  color: #475569;
+}
+
+.markdown-body :deep(table) {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  padding: 9px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  text-align: left;
+  white-space: normal;
+}
+
+.markdown-body :deep(th) {
+  background: #f1f5f9;
+  font-weight: 600;
+}
+
+.markdown-body :deep(code) {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.markdown-body :deep(pre) {
+  overflow-x: auto;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+.markdown-body :deep(pre code) {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.markdown-body :deep(hr) {
+  margin: 24px 0;
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.35);
+}
+
 .block-pre {
   font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular,
     Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -1723,6 +1935,17 @@ select:focus {
 .summary-block .block-pre,
 .sources-block .block-pre {
   max-height: 360px;
+}
+
+@media (max-width: 760px) {
+  .citation-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .citation-strip > div + div {
+    border-left: 0;
+    border-top: 1px solid rgba(148, 163, 184, 0.22);
+  }
 }
 
 

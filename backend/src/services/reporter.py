@@ -43,6 +43,11 @@ class ReportingService:
                 )
 
         notes_section = "\n".join(note_references) if note_references else "- 暂无可用任务笔记"
+        verified_claims_section = (
+            state.verified_claims_summary
+            if state.verified_claims_summary
+            else "暂无引用校验信息。"
+        )
 
         read_template = json.dumps({"action": "read", "note_id": "<note_id>"}, ensure_ascii=False)
         create_conclusion_template = json.dumps(
@@ -59,8 +64,12 @@ class ReportingService:
         prompt = (
             f"研究主题：{state.research_topic}\n"
             f"任务概览：\n{''.join(tasks_block)}\n"
+            f"引用校验结果：\n{verified_claims_section}\n"
             f"可用任务笔记：\n{notes_section}\n"
             f"请针对每条任务笔记使用格式：[TOOL_CALL:note:{read_template}] 读取内容，整合所有信息后撰写报告。\n"
+            "请优先使用引用校验结果中 supported 或 partial 的结论；unsupported 的结论不要作为确定事实表达。\n"
+            "报告中的关键事实必须在句末标注引用校验结果提供的 Claim ID 和 Source ID，例如 [C1-1][S2]；"
+            "无法获得对应 Source ID 的精确数字、唯一性判断或绝对化排名应删除或改写为不确定表述。\n"
             f"如需输出汇总结论，可追加调用：[TOOL_CALL:note:{create_conclusion_template}] 保存报告要点。"
         )
 
@@ -73,5 +82,11 @@ class ReportingService:
 
         report_text = strip_tool_calls(report_text).strip()
 
-        return report_text or "报告生成失败，请检查输入。"
+        report_text = report_text or "报告生成失败，请检查输入。"
+        if state.citation_audit_markdown:
+            report_text = (
+                f"{report_text.rstrip()}\n\n---\n\n"
+                f"{state.citation_audit_markdown.strip()}"
+            )
 
+        return report_text

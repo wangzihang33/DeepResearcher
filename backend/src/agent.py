@@ -400,6 +400,7 @@ class DeepResearchAgent:
 
         task.summary = summary_text.strip() if summary_text else "暂无可用信息"
         task.status = "completed"
+        self._persist_task_note(task)
 
         if emit_stream:
             for event in self._drain_tool_events(state, step=step):
@@ -506,6 +507,44 @@ class DeepResearchAgent:
             payload["note_path"] = str(note_path)
 
         return payload
+
+    def _persist_task_note(self, task: TodoItem) -> None:
+        """Persist completed task sources and summary independently of model tool use."""
+
+        if not self.note_tool:
+            return
+
+        content = (
+            f"## 任务概览\n{task.intent}\n\n"
+            f"## 检索查询\n{task.query}\n\n"
+            f"## 来源概览\n{task.sources_summary or '暂无来源'}\n\n"
+            f"## 任务总结\n{task.summary or '暂无可用信息'}"
+        )
+        payload = {
+            "task_id": task.id,
+            "title": f"任务 {task.id}: {task.title}",
+            "note_type": "task_state",
+            "tags": ["deep_research", f"task_{task.id}"],
+            "content": content,
+        }
+
+        response = ""
+        with self._state_lock:
+            if task.note_id:
+                response = self.note_tool.run(
+                    {"action": "update", "note_id": task.note_id, **payload}
+                )
+
+            if not task.note_id or (
+                isinstance(response, str) and response.startswith("❌")
+            ):
+                response = self.note_tool.run({"action": "create", **payload})
+                task.note_id = self._extract_note_id_from_text(str(response))
+
+        if task.note_id and self.config.notes_workspace:
+            task.note_path = str(
+                Path(self.config.notes_workspace) / f"{task.note_id}.md"
+            )
 
     def _find_existing_report_note_id(self, state: SummaryState) -> str | None:
         if state.report_note_id:

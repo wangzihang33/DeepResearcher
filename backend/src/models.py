@@ -36,6 +36,9 @@ class SummaryState:
     structured_report: Optional[str] = field(default=None)
     report_note_id: Optional[str] = field(default=None)
     report_note_path: Optional[str] = field(default=None)
+    verified_claims_summary: Optional[str] = field(default=None)
+    citation_audit_markdown: Optional[str] = field(default=None)
+    citation_metrics: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(kw_only=True)
@@ -71,6 +74,8 @@ class TaskBoardItem:
 class SourceCard:
     """Normalized source evidence passed between research agents."""
 
+    source_id: str = ""
+    task_id: Optional[int] = None
     title: str = ""
     url: str = ""
     snippet: str = ""
@@ -109,3 +114,37 @@ class HandoffMessage:
     task_id: Optional[int] = None
     content: str = ""
     payload: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(kw_only=True)
+class Claim:
+    """A report-level or task-level claim that should be backed by evidence."""
+
+    claim_id: str
+    task_id: int
+    text: str
+    source_ids: List[str] = field(default_factory=list)
+    support_status: str = "unchecked"
+    confidence: float = 0.0
+    reason: str = ""
+
+
+@dataclass(kw_only=True)
+class EvidenceLink:
+    """Relationship between a claim and a supporting source."""
+
+    claim_id: str
+    source_id: str
+    relation: str = "supports"
+    snippet: str = ""
+    score: float = 0.0
+
+
+@dataclass(kw_only=True)
+class EvidenceGraph:
+    """Evidence graph used by the citation verifier."""
+
+    claims: List[Claim] = field(default_factory=list)
+    sources: List[SourceCard] = field(default_factory=list)
+    links: List[EvidenceLink] = field(default_factory=list)
+    metrics: Dict[str, Any] = field(default_factory=dict)
