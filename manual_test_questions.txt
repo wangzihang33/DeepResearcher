@@ -1,0 +1,47 @@
+Deep Research Assistant - 人工测试问题
+
+使用方式：
+1. 启动后端和前端服务。
+2. 在前端输入下面的研究主题，观察任务拆解、阶段进度、来源引用、Evidence Graph 与最终 Markdown 报告。
+
+
+一、LangGraph 多 Agent 编排测试
+
+1. 对比 LangGraph、AutoGen 和 CrewAI 在多 Agent 编排、状态管理、并行任务、上下文隔离及生产部署方面的差异，并给出企业级深度研究系统的技术选型建议。
+2. 调研 LangGraph 在构建长任务 Agent 工作流中的核心能力，包括状态管理、节点编排、并行执行和人工干预能力。
+3. 对比 ReAct Agent、Plan-and-Execute Agent 与 LangGraph 状态图 Agent 在复杂研究任务中的适用场景。
+4. 分析多 Agent 系统中 Planner、Researcher、Verifier、Writer 的职责边界，以及如何避免上下文污染。
+
+
+二、Evidence Graph 与引用校验测试
+
+1. 调研 2026 年企业级 RAG 系统在引用追踪、事实一致性和证据校验方面的主流工程实践。
+2. 分析 Deep Research 系统如何保证报告中的关键结论可追溯到来源证据，并比较不同引用校验方案的优缺点。
+3. 调研 AI Agent 报告生成中的 hallucination 风险，并给出基于证据图和引用覆盖率的治理方案。
+4. 对比 OpenAI Deep Research、GPT Researcher 和 LangChain Open Deep Research 在来源引用、报告结构和可验证性方面的设计差异。
+
+
+三、研究质量评测测试
+
+1. 设计一套用于评估 Deep Research 报告质量的规则指标体系，覆盖任务覆盖率、引用覆盖率和来源质量。
+2. 调研多 Agent 研究报告评测方法，比较规则评测、LLM Judge 和人工评测在稳定性、成本与可复现性方面的差异。
+3. 分析如何构建 Deep Research hard set，用于持续评估研究完整性、来源可靠性和引用可追溯性。
+4. 给出一个面向技术选型报告的自动评测方案，说明如何发现未覆盖研究点和低质量来源。
+
+
+四、偏产品 / 行业调研类测试
+
+1. 调研 2026 年 AI Coding Agent 的主要发展方向，比较 Cursor、Claude Code、Codex 和开源 Agent 框架的能力差异。
+2. 分析企业采用 AI Agent 平台时，在权限控制、工具调用审计、成本管理和可观测性方面需要重点关注什么。
+3. 调研 MCP 在 Agent 工具生态中的作用，分析它适合哪些场景、不适合哪些场景。
+4. 对比当前主流向量数据库在 RAG 场景中的能力差异，包括 Chroma、Milvus、Qdrant 和 Elasticsearch。
+
+
+五、预期观察点
+
+1. Planner 是否拆出 3-5 个合理子任务。
+2. Researcher 是否为每个子任务生成 ResearchArtifact。
+3. 页面是否展示任务清单、阶段记录、来源列表和最终 Markdown 报告。
+4. 最终报告是否包含引用来源，而不是只有无来源总结。
+5. Citation Coverage、Source Quality 等评测或审计信息是否能反映报告质量。
+6. Markdown 内容在前端是否正常渲染。
